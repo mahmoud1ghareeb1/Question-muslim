@@ -1,15 +1,28 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Level, Question, RandomQuizSettings } from '../types';
 
-// IMPORTANT: This key is managed externally and should not be modified.
-const API_KEY = process.env.API_KEY;
+let ai: GoogleGenAI | null = null;
 
-if (!API_KEY) {
-  // In a real app, you might show a more user-friendly error message.
-  console.error("API_KEY environment variable not set.");
-}
+// This function initializes the Gemini client on its first use.
+// This prevents a module-level crash if process.env.API_KEY is not available at load time.
+const getAiClient = (): GoogleGenAI => {
+  if (ai) {
+    return ai;
+  }
 
-const ai = new GoogleGenAI({ apiKey: API_KEY! });
+  // IMPORTANT: This key is managed externally and should not be modified.
+  const API_KEY = process.env.API_KEY;
+
+  if (!API_KEY) {
+    // This error will now be caught by the component's try/catch block
+    // instead of crashing the entire application, thus preventing the blank screen.
+    throw new Error("متغير البيئة API_KEY غير موجود. في بيئة المتصفح، لا يمكن الوصول إلى 'process.env' مباشرة. تأكد من أن بيئة النشر (مثل Vercel) مهيأة بشكل صحيح لإتاحة المفتاح للـ frontend.");
+  }
+
+  ai = new GoogleGenAI({ apiKey: API_KEY });
+  return ai;
+};
+
 
 const questionSchema = {
   type: Type.ARRAY,
@@ -35,7 +48,8 @@ const questionSchema = {
 };
 
 const generateContentWithSchema = async (prompt: string): Promise<Omit<Question, 'id'>[]> => {
-    const response = await ai.models.generateContent({
+    const client = getAiClient(); // Get the initialized client.
+    const response = await client.models.generateContent({
         model: "gemini-2.5-flash",
         contents: prompt,
         config: {
@@ -44,20 +58,25 @@ const generateContentWithSchema = async (prompt: string): Promise<Omit<Question,
         },
     });
 
-    const jsonString = response.text.trim();
-    const questions = JSON.parse(jsonString);
+    try {
+        const jsonString = response.text.trim();
+        const questions = JSON.parse(jsonString);
 
-    if (!Array.isArray(questions) || questions.length === 0) {
-        throw new Error("API returned an empty or invalid array of questions.");
-    }
-    
-    questions.forEach(q => {
-        if (!q.question || !Array.isArray(q.options) || q.options.length !== 4 || !q.correctAnswer) {
-            throw new Error("Invalid question format received from API.");
+        if (!Array.isArray(questions) || questions.length === 0) {
+            throw new Error("API returned an empty or invalid array of questions.");
         }
-    });
+        
+        questions.forEach(q => {
+            if (!q.question || !Array.isArray(q.options) || q.options.length !== 4 || !q.correctAnswer) {
+                throw new Error("Invalid question format received from API.");
+            }
+        });
 
-    return questions;
+        return questions;
+    } catch (parseError) {
+        console.error("Failed to parse JSON response from Gemini:", response.text, parseError);
+        throw new Error("فشل في معالجة الاستجابة من الخادم. قد تكون الاستجابة ليست بتنسيق JSON صحيح.");
+    }
 };
 
 export const generateQuestions = async (level: Level, count: number): Promise<Omit<Question, 'id'>[]> => {
@@ -81,7 +100,8 @@ export const generateQuestions = async (level: Level, count: number): Promise<Om
     return await generateContentWithSchema(prompt);
   } catch (error) {
     console.error("Error generating questions for a level with Gemini API:", error);
-    throw new Error("فشل في توليد الأسئلة. الرجاء المحاولة مرة أخرى.");
+    // Re-throw the original, more specific error
+    throw error instanceof Error ? error : new Error("فشل في توليد الأسئلة. الرجاء المحاولة مرة أخرى.");
   }
 };
 
@@ -104,6 +124,7 @@ export const generateRandomQuestions = async (settings: RandomQuizSettings): Pro
         return await generateContentWithSchema(prompt);
     } catch (error) {
         console.error("Error generating random questions with Gemini API:", error);
-        throw new Error("فشل في توليد الأسئلة العشوائية. الرجاء المحاولة مرة أخرى.");
+        // Re-throw the original, more specific error
+        throw error instanceof Error ? error : new Error("فشل في توليد الأسئلة العشوائية. الرجاء المحاولة مرة أخرى.");
     }
 };
