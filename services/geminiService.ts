@@ -1,29 +1,8 @@
-import { GoogleGenAI, Type } from "@google/genai";
 import { Level, Question, RandomQuizSettings } from '../types';
+import { Type } from "@google/genai";
 
-let ai: GoogleGenAI | null = null;
-
-// This function initializes the Gemini client on its first use.
-// This prevents a module-level crash if process.env.API_KEY is not available at load time.
-const getAiClient = (): GoogleGenAI => {
-  if (ai) {
-    return ai;
-  }
-
-  // IMPORTANT: This key is managed externally and should not be modified.
-  const API_KEY = process.env.API_KEY;
-
-  if (!API_KEY) {
-    // This error will now be caught by the component's try/catch block
-    // instead of crashing the entire application, thus preventing the blank screen.
-    throw new Error("متغير البيئة API_KEY غير موجود. في بيئة المتصفح، لا يمكن الوصول إلى 'process.env' مباشرة. تأكد من أن بيئة النشر (مثل Vercel) مهيأة بشكل صحيح لإتاحة المفتاح للـ frontend.");
-  }
-
-  ai = new GoogleGenAI({ apiKey: API_KEY });
-  return ai;
-};
-
-
+// The schema is defined on the client and sent to the serverless function.
+// This ensures consistency and allows the client to know what to expect.
 const questionSchema = {
   type: Type.ARRAY,
   items: {
@@ -47,19 +26,41 @@ const questionSchema = {
   },
 };
 
+// This function now calls our secure server-side proxy instead of the Gemini SDK.
 const generateContentWithSchema = async (prompt: string): Promise<Omit<Question, 'id'>[]> => {
-    const client = getAiClient(); // Get the initialized client.
-    const response = await client.models.generateContent({
-        model: "gemini-2.5-flash",
+    
+    // The payload for our proxy API. We send the prompt and the desired schema.
+    const requestBody = {
         contents: prompt,
         config: {
             responseMimeType: "application/json",
             responseSchema: questionSchema,
+        }
+    };
+    
+    const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
         },
+        body: JSON.stringify(requestBody),
     });
 
+    if (!response.ok) {
+        const errorData = await response.json();
+        // Display the specific error message from the server proxy.
+        throw new Error(errorData.error || 'فشل الاتصال بالخادم.');
+    }
+
+    // The proxy returns a JSON object like { text: "..." }
+    const data = await response.json();
+    const jsonString = data.text;
+
+    if (!jsonString) {
+        throw new Error("الخادم لم يرجع أي بيانات. قد تكون هناك مشكلة في مفتاح API.");
+    }
+
     try {
-        const jsonString = response.text.trim();
         const questions = JSON.parse(jsonString);
 
         if (!Array.isArray(questions) || questions.length === 0) {
@@ -74,7 +75,7 @@ const generateContentWithSchema = async (prompt: string): Promise<Omit<Question,
 
         return questions;
     } catch (parseError) {
-        console.error("Failed to parse JSON response from Gemini:", response.text, parseError);
+        console.error("Failed to parse JSON response from proxy:", jsonString, parseError);
         throw new Error("فشل في معالجة الاستجابة من الخادم. قد تكون الاستجابة ليست بتنسيق JSON صحيح.");
     }
 };
@@ -99,9 +100,9 @@ export const generateQuestions = async (level: Level, count: number): Promise<Om
     `;
     return await generateContentWithSchema(prompt);
   } catch (error) {
-    console.error("Error generating questions for a level with Gemini API:", error);
-    // Re-throw the original, more specific error
-    throw error instanceof Error ? error : new Error("فشل في توليد الأسئلة. الرجاء المحاولة مرة أخرى.");
+    console.error("Error generating questions for a level via proxy:", error);
+    // Re-throw the more specific error from the proxy call
+    throw error;
   }
 };
 
@@ -123,8 +124,8 @@ export const generateRandomQuestions = async (settings: RandomQuizSettings): Pro
         `;
         return await generateContentWithSchema(prompt);
     } catch (error) {
-        console.error("Error generating random questions with Gemini API:", error);
-        // Re-throw the original, more specific error
-        throw error instanceof Error ? error : new Error("فشل في توليد الأسئلة العشوائية. الرجاء المحاولة مرة أخرى.");
+        console.error("Error generating random questions via proxy:", error);
+        // Re-throw the more specific error from the proxy call
+        throw error;
     }
 };
